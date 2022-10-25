@@ -1,7 +1,9 @@
 import math
 import torch
 import torch.nn.functional as F
-# import re
+import re
+import copy
+import importlib
 from torch.autograd import Variable
 
 
@@ -79,8 +81,8 @@ class MultiHeadAttention(torch.nn.Module):
         return output
 
 
-mul_head = MultiHeadAttention(4, 4).forward(query, key, value)
-print(mul_head)
+# mul_head = MultiHeadAttention(4, 4).forward(query, key, value)
+# print(mul_head)
 
 
 class Embedding(torch.nn.Module):
@@ -171,3 +173,23 @@ class Encoder(torch.nn.Module):
         for i in range(self.N):
             x = self.layers[i](x, mask)
         return self.norm(x)
+
+
+class Tokenize(object):
+
+    def __init__(self, lang):
+        self.nlp = importlib.import_module(lang).load()
+
+    def tokenizer(self, sentence):
+        sentence = re.sub(
+            r"[\*\"“”\n\\…\+\-\/\=\(\)‘•:\[\]\|’\!;]", " ", str(sentence))
+        sentence = re.sub(r"[ ]+", " ", sentence)
+        sentence = re.sub(r"\!+", "!", sentence)
+        sentence = re.sub(r"\,+", ",", sentence)
+        sentence = re.sub(r"\?+", "?", sentence)
+        sentence = sentence.lower()
+        return [tok.text for tok in self.nlp.tokenizer(sentence) if tok.text != " "]
+
+
+tokenize = Tokenize('zh_core_web_sm')
+tokenize.tokenizer('你好，这里是中国。')
