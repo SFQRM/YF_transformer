@@ -3,6 +3,13 @@ import torch.nn as nn
 import math
 from torch.autograd import Variable
 
+# --------------------输入部分-------------------- #
+
+"""
+    文本嵌入层的作用：
+    ·无论是源文本嵌入还是目标文本嵌入，都是为了将文本中词汇的数字表示转换为向量表示，希望在这样的高维空间捕捉词汇间的关系。
+"""
+
 
 class Embeddings(nn.Module):
     def __init__(self, d_model, vocab):
@@ -14,6 +21,7 @@ class Embeddings(nn.Module):
 
     def forward(self, x):
         """参数x:输入给模型的文本通过词汇映射后的张量"""
+        # 乘根号下d_model是为了缩放数据
         return self.lut(x) * math.sqrt(self.d_model)
 
 
@@ -29,22 +37,31 @@ input = torch.LongTensor([[1, 2, 4, 5],
 # torch.Size([2, 4, 3])
 """
 
-"""
+# """
 # 词嵌入维度是512维
 d_model = 512
 # 词表大小是1000
 vocab = 1000
 
-x = Variable(torch.LongTensor([[100, 2, 421, 508],
+input_data = Variable(torch.LongTensor([[100, 2, 421, 508],
                                [491, 998, 1, 221]]))
 emb = Embeddings(d_model, vocab)
-embr = emb(x)
+embr = emb(input_data)
 # print("embr:", embr)
 # print(embr.shape)
 # torch.Size([2, 4, 512])
+# """
+
+
+"""
+    位置编码器的作用：
+    ·因为在Transformer的编码器结构中，并没有针对词汇位置信息的处理，
+     因此需要在Embedding层后加入位置编码器，
+     将词汇位置不用可能会产生不同语义的信息加入到词嵌入张量中，以弥补位置信息的缺失。
 """
 
 
+# 位置编码器的类
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout, max_len=5000):
         """
@@ -66,8 +83,8 @@ class PositionalEncoding(nn.Module):
         # 绝对位置矩阵初始化之后，需要考虑如何将位置信息加入到位置编码矩阵中
         # 最简单的思路就是先将绝对位置矩阵变换成max_len x d_model的形状，然后覆盖位置编码矩阵
         div_term = torch.exp(torch.arange(0, d_model, 2) * -(math.log(10000.0)/d_model))
-        pe[:, 0::2] = math.sin(position * div_term)
-        pe[:, 1::2] = math.cos(position * div_term)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
 
         # 目前得到的位置编码矩阵pe还只是一个二维矩阵，要想和embedding的输出（一个三维张量）相加，就必须拓展使用unsqueeze拓展一个维度。
         pe = pe.unsqueeze(0)
@@ -86,6 +103,7 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
+"""
 # 词嵌入维度是512维
 d_model = 512
 # 置0比率为0.1
@@ -93,11 +111,53 @@ dropout = 0.1
 # 句子最大长度
 max_len = 60
 # 输入x是Embedding层的输出的张量, 形状是2 x 4 x 512
+# embr = Embeddings(d_model, dropout)
 x = embr
-
-
+pe = PositionalEncoding(d_model, dropout, max_len)
+pe_result = pe(x)  # (2,4,512)
+print("pe_result:", pe_result)
+print(pe_result.shape)
+"""
 
 # position = torch.arange(0, 5)
 # print(position)
 # print(position.unsqueeze(1))
 # print(position.unsqueeze(1).unsqueeze(0))
+
+"""
+# 绘制词汇向量中特征的分布曲线
+import matplotlib.pyplot as plt
+import numpy as np
+
+# 创建一个15 x 5大小的画布
+plt.figure(figsize=(15, 5))
+
+# 实例化PositionalEncoding类得到_pe对象，输入参数是20和0
+_pe = PositionalEncoding(20, 0)
+
+# 然后向_pe传入被Variable封装的tensor，这样_pe会直接执行forward函数
+# 且这个tensor里的数值都是0，被处理后相当于位置编码张量
+y = _pe(Variable(torch.zeros(1, 100, 20)))
+print(y)
+print(y.shape)
+# torch.Size([1, 100, 20])
+
+# 然后定义画布的横纵坐标，横坐标到100的长度，纵坐标是某一个词汇中的某维特征在不同长度下对应的值
+# 因为总共有20维，这里只查看4、5、6、7维的值
+plt.plot(np.arange(100), y[0, :, 4:8].data.numpy())
+
+plt.legend(["dim %d"%p for p in [4, 5, 6, 7]])
+plt.show()
+"""
+"""
+    输出效果分析：
+    ·每条颜色的曲线代表某一个词汇中的特征在不同位置的含义
+    ·保证同一词汇随着所在位置不同它对应位置嵌入向量会发生变化
+    ·正弦波和余弦波的值域范围都是1到-1，这又很好的控制了嵌入数值的大小，有助于梯度的快速计算
+"""
+
+
+# --------------------Encoder部分-------------------- #
+
+
+# --------------------Dncoder部分-------------------- #
