@@ -423,6 +423,7 @@ class LayerNorm(nn.Module):
         return self.a2 * (x - mean) / (std + self.eps) + self.b2
 
 
+# """
 features = d_model = 512
 eps = 1e-6
 # 输入x来自前馈全连接层的输出
@@ -430,7 +431,143 @@ x = ff_result
 
 ln = LayerNorm(features, eps)
 ln_result = ln(x)
-print(ln_result)    # (2,4,512)
+# print(ln_result)    # (2,4,512)
+# """
 
+
+# 使用SublayerConnection来实现子层连接结构的类
+class SublayerConnection(nn.Module):
+    def __init__(self, size, dropout=0.1):
+        """
+        输入参数有两个，size以及dropout.
+        :param size: 词嵌入维度的大小.
+        :param dropout: 输出矩阵的随机置0的比率.
+        """
+        super(SublayerConnection, self).__init__()
+        # 实例化了规范化层对象self.norm
+        self.norm = LayerNorm(size)
+        # 使用nn.Droupout实例化一个self.dropout对象.
+        self.dropout = nn.Dropout(p=dropout)
+
+    def forward(self, x, sublayer):
+        """前向逻辑函数中, 接收上一个层或者子层的输入作为第一个参数，
+           将该子层连接中的子层函数作为第二个参数"""
+
+        # 我们首先对输出进行规范化，然后将结果传给子层处理，之后再对子层进行dropout操作，
+        # 随机停止一些网络中神经元的作用，来防止过拟合. 最后还有一个add操作，
+        # 因为存在跳跃连接，所以是将输入x与dropout后的子层输出结果相加作为最终的子层连接输出
+        return x + self.dropout(sublayer(self.norm(x)))
+
+
+size = 512
+dropout = 0.2
+head = 8
+d_model = 512
+
+# 令x为位置编码器的输出
+x = pe_result
+mask = Variable(torch.zeros(8, 4, 4))
+
+# 假设子层中装的是多头注意力层，实例化这个类
+self_attn = MultiHeadedAttention(head, d_model)
+
+# 使用lambda获得一个函数类型的子层
+"""
+    lambda [parameters]: expression
+    关键字lamdbda 参数: 函数体
+    Lambda是一种不需要名字（即标识符）、由一个单独表达式成的匿名内联函数，函数体会在调用时被求值。
+"""
+sublayer = lambda x: self_attn(x, x, x, mask)
+
+sc = SublayerConnection(size, dropout)
+sc_result = sc(x, sublayer)
+# print(sc_result)                # (2,4,512)
+
+
+# 编码器层
+# 使用EncoderLayer类实现编码器层
+class EncoderLayer(nn.Module):
+    def __init__(self, size, self_attn, feed_forward, dropout):
+        """
+            初始化函数参数有四个，分别是
+            :param size: 词嵌入维度的大小，它也将作为我们编码器层的大小
+            :param self_attn: 将传入多头自注意力子层实例化对象, 并且是自注意力机制
+            :param feed_forward: 将传入前馈全连接层实例化对象
+            :param dropout: 置0比率
+        """
+        super(EncoderLayer, self).__init__()
+
+        # 首先将self_attn和feed_forward传入
+        self.self_attn = self_attn
+        self.feed_forward = feed_forward
+        # 编码器层中有两个子层连接结构, 所以使用clones函数进行克隆
+        self.sublayer = clones(SublayerConnection(size, dropout), 2)
+        # 把size传入其中
+        self.size = size
+
+    def forward(self, x, mask):
+        """forward函数中有两个输入参数，x和mask，分别代表上一层的输出，和掩码张量mask。"""
+        # 首先通过第一个子层连接结构，其中包含多头自注意力子层，
+        # 然后通过第二个子层连接结构，其中包含前馈全连接子层。
+        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))
+        return self.sublayer[1](x, self.feed_forward)
+
+
+size = 512
+head = 8
+d_model = 512
+d_ff = 64
+x = pe_result
+dropout = 0.2
+self_attn = MultiHeadedAttention(head, d_model)
+ff = PositionwiseFeedForward(d_model, d_ff, dropout)
+mask = Variable(torch.zeros(8, 4, 4))
+
+el = EncoderLayer(size, self_attn, ff, dropout)
+el_result = el(x, mask)
+# print(el_result)                # （2,4,512）
+# print(el_result.shape)
+
+
+# 使用Encoder类来实现编码器
+class Encoder(nn.Module):
+    def __init__(self, layer, N):
+        """初始化函数的两个参数分别代表编码器层和编码器层的个数"""
+        super(Encoder, self).__init__()
+        # 首先使用clones函数克隆N个编码器层放在self.layers中
+        self.layers = clones(layer, N)
+        # 再初始化一个规范化层, 它将用在编码器的最后面
+        self.norm = LayerNorm(layer.size)
+
+    def forward(self, x, mask):
+        """forward函数的输入和编码器层相同, x代表上一层的输出, mask代表掩码张量"""
+        # 首先就是对我们克隆的编码器层进行循环，每次都会得到一个新的x，
+        # 这个循环的过程，就相当于输出的x经过了N个编码器层的处理。
+        # 最后再通过规范化层的对象self.norm进行处理，返回结果。
+        for layer in self.layers:
+            x = layer(x, mask)
+        return self.norm(x)
+
+
+# 第一个实例化参数layer, 它是一个编码器层的实例化对象, 因此需要传入编码器层的参数
+# 又因为编码器层中的子层是不共享的, 因此需要使用深度拷贝各个对象
+size = 512
+head = 8
+d_model = 512
+d_ff = 64
+c = copy.deepcopy
+attn = MultiHeadedAttention(head, d_model)
+ff = PositionwiseFeedForward(d_model, d_ff, dropout)
+dropout = 0.2
+layer = EncoderLayer(size, c(attn), c(ff), dropout)
+
+# 编码器中编码器层的个数N
+N = 8
+mask = Variable(torch.zeros(8, 4, 4))
+
+en = Encoder(layer, N)
+en_result = en(x, mask)
+# print(en_result)
+# print(en_result.shape)        # （2,4,512）
 
 # --------------------Dncoder部分-------------------- #
