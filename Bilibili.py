@@ -6,6 +6,15 @@ import matplotlib.pyplot as plt
 import torch.nn.functional as F
 import copy
 from torch.autograd import Variable
+from pyitcast.transformer_utils import Batch
+from pyitcast.transformer_utils import get_std_opt
+# from pyitcast.transformer_utils import LabelSmoothing
+# from pyitcast.transformer_utils import SimpleLossCompute
+from loss import LabelSmoothing
+from loss import SimpleLossCompute
+from pyitcast.transformer_utils import run_epoch
+
+from tqdm import *
 
 # --------------------输入部分-------------------- #
 
@@ -681,5 +690,295 @@ source_mask = target_mask = mask
 
 de = Decoder(layer, N)
 de_result = de(x, memory, source_mask, target_mask)
-print(de_result)
-print(de_result.shape)
+# print(de_result)
+# print(de_result.shape)      # torch.Size([2, 4, 512])
+
+
+# 输出层
+# Generator类将线性层和softmax计算层一起实现, 因为二者的共同目标是生成最后的结构
+class Generator(nn.Module):
+    def __init__(self, d_model, vocab_size):
+        """初始化函数的输入参数有两个, d_model代表词嵌入维度, vocab_size代表词表大小"""
+        super(Generator, self).__init__()
+        # 首先就是使用nn中的预定义线性层进行实例化, 得到一个对象self.project等待使用,
+        # 这个线性层的参数有两个, 就是初始化函数传进来的两个参数: d_model, vocab_size
+        self.project = nn.Linear(d_model, vocab_size)
+
+    def forward(self, x):
+        """前向逻辑函数中输入是上一层的输出张量x"""
+        # 在函数中, 首先使用上一步得到的self.project对x进行线性变化，然后使用F.log_softmax进行softmax处理。
+        # 在这里之所以使用log_softmax是因为和我们这个pytorch版本的损失函数实现有关, 在其他版本中将修复。
+        # log_softmax就是对softmax的结果又取了对数，因为对数函数是单调递增函数，因此对最终我们取最大的概率值没有影响
+        return F.log_softmax(self.project(x), dim=-1)
+
+"""
+# nn.Linear演示
+m = nn.Linear(20, 30)
+# print(m)
+input = torch.randn(128, 20)
+# print(input)
+output = m(input)
+# print(output.shape)     # torch.Size([128, 30])
+"""
+# 词嵌入维度是512维
+d_model = 512
+# 词表大小是1000
+vocab_size = 1000
+# 输入x是上一层网络的输出, 我们使用来自解码器层的输出
+x = de_result
+gen = Generator(d_model, vocab_size)
+gen_result = gen(x)
+# print(gen_result)
+# print(gen_result.shape)     # (2,4,1000)
+
+
+# --------------------模型构建部分-------------------- #
+# 构建编码器-解码器结构类
+# 使用EncoderDecoder类来实现编码器-解码器结构
+class EncoderDecoder(nn.Module):
+    def __init__(self, encoder, decoder, source_embed, target_embed, generator):
+        """
+            初始化函数中有5个参数，分别是
+            encoder: 编码器对象，
+            decoder: 解码器对象，
+            source_embed: 源数据嵌入函数，
+            target_embed: 目标数据嵌入函数，
+            generator: 输出部分的类别生成器对象。
+        """
+        super(EncoderDecoder, self).__init__()
+        # 将参数传入到类中
+        self.encoder = encoder
+        self.decoder = decoder
+        self.src_embed = source_embed
+        self.tgt_embed = target_embed
+        self.generator = generator
+
+    def forward(self, source, target, source_mask, target_mask):
+        """在forward函数中有四个参数, source代表源数据, target代表目标数据,
+           source_mask和target_mask代表对应的掩码张量"""
+
+        # 在函数中, 将source, source_mask传入编码函数, 得到结果后,
+        # 与source_mask，target和target_mask一同传给解码函数
+        return self.decode(self.encode(source, source_mask), source_mask, target, target_mask)
+
+    def encode(self, source, source_mask):
+        """编码函数, 以source和source_mask为参数"""
+        # 使用src_embed对source做处理, 然后和source_mask一起传给self.encoder
+        return self.encoder(self.src_embed(source), source_mask)
+
+    def decode(self, memory, source_mask, target, target_mask):
+        """解码函数, 以memory即编码器的输出, source_mask, target, target_mask为参数"""
+        # 使用tgt_embed对target做处理, 然后和source_mask, target_mask, memory一起传给self.decoder
+        return self.decoder(self.tgt_embed(target), memory, source_mask, target_mask)
+
+
+vocab_size = 1000
+d_model = 512
+encoder = en
+decoder = de
+source_embed = nn.Embedding(vocab_size, d_model)
+target_embed = nn.Embedding(vocab_size, d_model)
+generator = gen
+# 假设源数据与目标数据相同, 实际中并不相同
+source = target = Variable(torch.LongTensor([[100, 2, 421, 508], [491, 998, 1, 221]]))
+# 假设src_mask与tgt_mask相同，实际中并不相同
+source_mask = target_mask = Variable(torch.zeros(8, 4, 4))
+ed = EncoderDecoder(encoder, decoder, source_embed, target_embed, generator)
+ed_result = ed(source, target, source_mask, target_mask)  # (2,4,512)
+# print(ed_result)
+# print(ed_result.shape)
+
+
+# Transformer模型构建
+def make_model(source_vocab, target_vocab, N=6, d_model=512, d_ff=2048, head=8, dropout=0.1):
+    """
+        该函数用来构建模型, 有7个参数，
+        source_vocab: 是源数据特征(词汇)总数，
+        target_vocab: 目标数据特征(词汇)总数，
+        N: 编码器和解码器堆叠数，
+        d_model: 词向量映射维度，
+        d_ff: 前馈全连接网络中变换矩阵的维度，
+        head: 多头注意力结构中的多头数，
+        dropout: 置零比率dropout.
+    """
+
+    # 首先得到一个深度拷贝命令，接下来很多结构都需要进行深度拷贝
+    c = copy.deepcopy
+
+    # 实例化了多头注意力类，得到对象attn
+    attn = MultiHeadedAttention(head, d_model)
+
+    # 然后实例化前馈全连接类，得到对象ff
+    ff = PositionwiseFeedForward(d_model, d_ff, dropout)
+
+    # 实例化位置编码类，得到对象position
+    position = PositionalEncoding(d_model, dropout)
+
+    # 根据结构图, 最外层是EncoderDecoder，在EncoderDecoder中，
+    # 分别是编码器层，解码器层，源数据Embedding层和位置编码组成的有序结构，
+    # 目标数据Embedding层和位置编码组成的有序结构，以及类别生成器层。
+    # 在编码器层中有attention子层以及前馈全连接子层，
+    # 在解码器层中有两个attention子层以及前馈全连接层.
+    model = EncoderDecoder(
+        Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), N),
+        Decoder(DecoderLayer(d_model, c(attn), c(attn), c(ff), dropout), N),
+        nn.Sequential(Embeddings(d_model, source_vocab), c(position)),
+        nn.Sequential(Embeddings(d_model, target_vocab), c(position)),
+        Generator(d_model, target_vocab))
+
+    # 模型结构完成后，接下来就是初始化模型中的参数，比如线性层中的变换矩阵
+    # 这里一但判断参数的维度大于1，则会将其初始化成一个服从均匀分布的矩阵。
+    for p in model.parameters():
+        if p.dim() > 1:
+            # nn.init.xavier_uniform(p)
+            nn.init.xavier_uniform_(p)
+    return model
+
+"""
+if __name__ == '__main__':
+    source_vocab = 11
+    target_vocab = 11
+    N = 6
+    # 其他参数都使用默认值
+    res = make_model(source_vocab, target_vocab, N)
+    print(res)
+"""
+
+# --------------------模型测试部分-------------------- #
+"""
+    # copy任务
+    ·任务描述：针对数字序列进行学习，学习的最终目标是使输出与输入色序列相同。
+             例如输入[1,5,8,9,3],输出也是[1,5,8,9,3]  
+"""
+
+
+# 第一步：构建数据集生成器
+def data_generator(V, batch, num_batch):
+    """
+        该函数用于随机生成copy任务的数据，它的三个输入参数是：
+        V: 随机生成数字的最大值+1；
+        batch: 每次输送给模型更新一次参数的数据量；
+        num_batch: batch的轮次
+    """
+    # 使用for循环遍历nbatches
+    for i in range(num_batch):
+        # 在循环中使用np.random.randint方法随机生成[1, V)的整数，
+        # 分布在(batch, 10)形状的矩阵中，然后再把numpy形式转化成torch中的tensor
+        data = torch.from_numpy(np.random.randint(1, V, size=(batch, 10)))
+
+        # 接着使数据矩阵中的第一列置为1，这一列也就成为了起始标志列
+        # 当解码器进行第一次解码的时候，会使用起始标志列作为输入。
+        data[:, 0] = 1
+
+        # 因为是copy任务，所有source和target是完全相同的，且数据样本作用变量不需要求梯度
+        # 因此requires_gard设置为False
+        source = Variable(data, requires_grad=False)
+        target = Variable(data, requires_grad=False)
+
+        # 使用Batch对source和target进行对应批次的掩码张量生成，最后使用yield放回
+        yield Batch(source, target)
+
+
+# 将生成0-10的整数
+V = 10
+
+# 每次喂给模型20个数据进行参数更新
+batch = 20
+
+# 连续喂30次完成全部数据的遍历
+num_batch = 30
+
+"""
+if __name__ == '__main__':
+    res = data_generator(V, batch, num_batch)
+    print(res)
+"""
+
+# 第二步: 获得Transformer模型及其优化器和损失函数
+# 导入优化器工具包get_std_opt, 该工具用于获得标准的针对Transformer模型的优化器
+# 该标准优化器基于Adam优化器, 使其对序列到序列的任务更有效.
+# from pyitcast.transformer_utils import get_std_opt
+
+# 导入标签平滑工具包, 该工具用于标签平滑, 标签平滑的作用就是小幅度的改变原有标签值的值域
+# 因为在理论上即使是人工的标注数据也可能并非完全正确, 会受到一些外界因素的影响而产生一些微小的偏差
+# 因此使用标签平滑来弥补这种偏差, 减少模型对某一条规律的绝对认知, 以防止过拟合. 通过下面示例了解更多.
+# from pyitcast.transformer_utils import LabelSmoothing
+
+# 导入损失计算工具包, 该工具能够使用标签平滑后的结果进行损失的计算,
+# 损失的计算方法可以认为是交叉熵损失函数.
+# from pyitcast.transformer_utils import SimpleLossCompute
+
+# """
+# 使用make_model获得model的实例化对象
+model = make_model(V, V, N=2)
+# print(model)
+
+# 使用get_std_opt获得模型优化器
+model_optimizer = get_std_opt(model)
+# print(model_optimizer)
+
+# 使用LabelSmoothing获得标签平滑对象
+criterion = LabelSmoothing(size=V, padding_idx=0, smoothing=0.0)
+# print(criterion)
+
+# 使用SimpleLossCompute获得利用标签平滑结果的损失计算方法
+loss = SimpleLossCompute(model.generator, criterion, model_optimizer)
+# print(loss)
+# """
+
+
+# 【标签平滑示例】
+# 使用LabelSmoothing实例化一个crit对象.
+# 第一个参数size代表目标数据的词汇总数, 也是模型最后一层得到张量的最后一维大小
+# 这里是5说明目标词汇总数是5个. 第二个参数padding_idx表示要将那些tensor中的数字
+# 替换成0, 一般padding_idx=0表示不进行替换. 第三个参数smoothing, 表示标签的平滑程度
+# 如原来标签的表示值为1, 则平滑后它的值域变为[1-smoothing, 1+smoothing].
+# crit = LabelSmoothing(size=5, padding_idx=0, smoothing=0.5)
+
+# 假定一个任意的模型最后输出预测结果和真实结果
+"""
+predict = Variable(torch.FloatTensor([[0, 0.2, 0.7, 0.1, 0],
+                                      [0, 0.2, 0.7, 0.1, 0],
+                                      [0, 0.2, 0.7, 0.1, 0]]))
+"""
+
+# 标签的表示值是0，1，2
+# target = Variable(torch.LongTensor([2, 1, 0]))
+
+# 将predict, target传入到对象中
+# crit(predict, target)
+
+# 绘制标签平滑图像
+# plt.imshow(crit.true_dist)
+
+
+# 第三步: 运行模型进行训练和评估
+# 导入模型单轮训练工具包run_epoch, 该工具将对模型使用给定的损失函数计算方法进行单轮参数更新.
+# 并打印每轮参数更新的损失结果.
+# from pyitcast.transformer_utils import run_epoch
+
+
+def run(model, loss, epochs=10):
+    """模型训练函数, 共有三个参数, model代表将要进行训练的模型
+       loss代表使用的损失计算方法, epochs代表模型训练的轮数"""
+
+    # 遍历轮数
+    for epoch in range(epochs):
+        # 模型使用训练模式, 所有参数将被更新
+        model.train()
+        # 训练时, batch_size是20
+        # source = Variable(torch.LongTensor([[1,3,2,5,4,6,7,8,9,10]]))
+        run_epoch(enumerate(data_generator(V, 8, 20)), model, loss)
+        # run_epoch(source, model, loss)
+
+        # 模型使用评估模式, 参数将不会变化
+        # model.eval()
+        # 评估时, batch_size是5
+        # run_epoch(data_generator(V, 8, 5), model, loss)
+
+
+# """
+if __name__ == '__main__':
+    run(model, loss)
+    # pass
+# """
