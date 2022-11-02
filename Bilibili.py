@@ -8,10 +8,10 @@ import copy
 from torch.autograd import Variable
 from pyitcast.transformer_utils import Batch
 from pyitcast.transformer_utils import get_std_opt
-# from pyitcast.transformer_utils import LabelSmoothing
-# from pyitcast.transformer_utils import SimpleLossCompute
-from loss import LabelSmoothing
-from loss import SimpleLossCompute
+from pyitcast.transformer_utils import LabelSmoothing
+from pyitcast.transformer_utils import SimpleLossCompute
+# from loss import LabelSmoothing
+# from loss import SimpleLossCompute
 from pyitcast.transformer_utils import run_epoch
 
 from tqdm import *
@@ -880,7 +880,7 @@ def data_generator(V, batch, num_batch):
 
 
 # 将生成0-10的整数
-V = 10
+V = 11
 
 # 每次喂给模型20个数据进行参数更新
 batch = 20
@@ -892,7 +892,8 @@ num_batch = 30
 if __name__ == '__main__':
     res = data_generator(V, batch, num_batch)
     print(res)
-"""
+    # <generator object data_generator at 0x000002969A1286C8>
+# """
 
 # 第二步: 获得Transformer模型及其优化器和损失函数
 # 导入优化器工具包get_std_opt, 该工具用于获得标准的针对Transformer模型的优化器
@@ -940,16 +941,19 @@ loss = SimpleLossCompute(model.generator, criterion, model_optimizer)
 predict = Variable(torch.FloatTensor([[0, 0.2, 0.7, 0.1, 0],
                                       [0, 0.2, 0.7, 0.1, 0],
                                       [0, 0.2, 0.7, 0.1, 0]]))
-"""
+# """
 
 # 标签的表示值是0，1，2
 # target = Variable(torch.LongTensor([2, 1, 0]))
 
 # 将predict, target传入到对象中
-# crit(predict, target)
+#crit(predict, target)
+
+# print(crit.true_dist)
 
 # 绘制标签平滑图像
 # plt.imshow(crit.true_dist)
+# plt.show()
 
 
 # 第三步: 运行模型进行训练和评估
@@ -968,7 +972,7 @@ def run(model, loss, epochs=10):
         model.train()
         # 训练时, batch_size是20
         # source = Variable(torch.LongTensor([[1,3,2,5,4,6,7,8,9,10]]))
-        run_epoch(enumerate(data_generator(V, 8, 20)), model, loss)
+        run_epoch(data_generator(V, 8, 20), model, loss)
         # run_epoch(source, model, loss)
 
         # 模型使用评估模式, 参数将不会变化
